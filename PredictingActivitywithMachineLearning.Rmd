@@ -1,0 +1,402 @@
+Predicting Human Activity Using Practical Machine Learning Techniques
+========================================================
+### by Jay Gendron
+
+## Introduction
+
+Human activity has become easier to record using wearable technology (Leek, Caffo, & Peng, 2014). As a result, Ugulino et al. (2012) note a growing trend in the level of research papers focused on Human Activity Recognition as shown in Figure 1.
+
+<img alt="HAR: IEEE publications (2006-2011) based on wearable accelerometers' data" src="http://groupware.les.inf.puc-rio.br/static/har/har-publications-chart.png" height="280" width="450" align="middle" /><br />
+
+> __Figure 1__: Growing Research Area. IEEE publications focused on HAR (2006-2011) based on wearable accelerometers.
+
+Data has become increasingly more available in public datasets containing processed output signals from wearable accelerometers and gyroscopes -- including those embedded in smartphones. The signals from these small, mobile instruments result in hundreds of predictor variables with measures in three-dimensional space. A growing trend in research is to predict what activity the subjects are performing by interpreting the signals produced by these accelerometers (Groupware, 2014). This is not a trivial task and it often requires some application of machine learning.
+
+The purpose of this analysis is to predict a subject's activity (sitting-down, standing-up, standing, walking, or sitting) based on the data collected and processed in the [dataset](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) provided (Leek et al., 2014). The dataset was investigated using exploratory data analysis to understand the data, identify anomalies, and perform required transformations. Next, a prediction model was developed using a RandomForest prediction algorithm. The model was assessed using 3-Fold cross validation techniques. The results indicate:
+
+* an estimated of out of sample error rate of 2% (98.01% accuracy, 95% CI [0.973,0.986])
+* predictions of human activity for 20 test cases, resulting in 100% accuracy using the prediction model developed
+
+This was a surprising result because usually the prediction error is greater than the out of sample error rate determined by cross validation.
+
+## Data Analysis
+
+### Data Collection
+
+For purposes of this analysis, the data used is based on the work of Ugulino et al. (2014) on Human Activity Recognition. More specifically, the data was a pre-processed dataset made available by Johns Hopkins University's Practical Machine Learning course (Leek et al., 2014). It includes 19,622 observations excerpted from the 39,243 available (Ugulino et al, 2012). It includes data from six users and contains 160 variables including a variable called _classe_ representing the activity performed during the observation. Data was collected during a period from November 28 to December 5, 2011. The data were downloaded from [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) on June 13, 2014 using the R programming language (R Core Team, 2014).
+
+``` {r readData}
+## This analysis presumes you have downloaded two datasets from these URLs and 
+## stored them into your working directory using the filenames below
+## Training dataset "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+## Testing dataset "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+## Establish dataframes
+training.provided <- read.csv ("pml-training.csv")
+testing.provided <- read.csv ("pml-testing.csv")
+
+```
+
+### Data Transformations
+
+The data was reviewed to look for poor quality and ensure tidy data principles were met. The first 20 variables are presented to show the underlying characteristics of the original data.
+
+``` {r data transformations,results='hold'}
+## Exploratory Data Analysis
+dim(training.provided);dim(testing.provided)
+head(training.provided[,1:20], n=1) # many that are purely NA...eliminate those columns
+
+## Remove bad data
+bad.col <- is.na(training.provided[453,]) # pick random row to build a column filter
+table(bad.col) # show magnitude of bad data
+training <- training.provided[,!bad.col] #transformed training data
+testing <- testing.provided[,!bad.col] #transformed testing data
+## Measures to verify NAs removed
+original <- is.na(training.provided)
+transformed <- is.na(training)
+table(original);table(transformed) # all NAs removed
+
+rm(bad.col,original,transformed) #clean up environment
+
+message("Size of provided training and testing datasets")
+```
+
+One sees that 67 of the 160 variables contained NA elements. A filter was constructed to remove those variables. The tables comparing the original and transformed data show that all the NAs were removed from the dataset. 
+
+Additionally, the data contained many blank columns with sparse inclusion of calibration information. The first seven variables containing names and time stamps were removed. Additionally, all blank columns were located and removed -- reducing the dataset into 53 tidy variables. The summary of the data is provided at Appendix A.
+
+``` {r transform variable classes,results='hold'}
+## Remove front variables
+training <- training[,-c(1:7)]
+testing <- testing[,-c(1:7)]
+## Create array to capture columns with good data
+good.data <- rep(NA,ncol(training)) 
+for (i in 1:ncol(training)) {
+        good.data[i] <- (is.numeric(training[,i]) | is.integer(training[,i]))
+}
+good.data[length(training)] <- TRUE # retain the factor "classe"
+training <- training[,good.data] #reduces variables to those with data
+testing <- testing[,good.data] # perform same on testing dataset
+
+rm(i,good.data) #clean up environment
+```
+
+### Exploratory Analysis
+
+The function below was created to quickly look at all variables for distribution and skewness. The code chunk following that generates Figure 2 showing three representative variables having very different distributions. Combinations of normal, skewed, and bi-modal data were present through the dataset.
+
+``` {r Histogram of all variables,eval=FALSE}
+## code provided only for reproducibility as it results in 93 plots
+for (i in 1:ncol(training)){
+        hist(training[,i],main=paste("Histogram of variable",i,sep=" "))
+}
+```
+
+``` {r Exploratory data analysis,fig.height = 7, fig.width=7,fig.align='center',results='hold'}
+par(mfrow=c(3,1))
+labels <- colnames(training)
+
+for (i in c(10,12,33)) {
+        hist(training[,i],main=paste("Histogram of",labels[i],sep=" "),
+             col="deepskyblue3", xlab=labels[i])
+}
+```
+
+> __Figure 2:__ Distribution of Variables. This figure shows three panels which are representative of the variation in the distributions among the dataset provided. The top panel shows a bimodal, off-center distribution. The next two panels show a left- and right-skewed distribution. It should be noted that many of the variables were nearly normally distributed.
+
+Having looked at skewness, the raw data was inspected to identify if any variables had some sort of clustering (hence, predictive) properties. Similar to the auto-generation of histograms, a scatterplot of the dependent variables (A through E) versus each variable were generated. After inspecting the full set of 52 plots, a representative sample were selected for presentation in this report.
+
+Two transforms were made on a temporary dataframe to generate Figure 3. The plots showing the best, middle, and worst clustering were identified by column number and the data was reduced to those three plus the dependent variable, _classe_. The other transform sorted the data by _classe_ to group the dependent variable as opposed to showing a time-series plot. The plots in Figure 3 show no predictive power intrinsic to the variables. Had any of the colors correlated to particular steps, that would have indicated a variable having natural predictive capacity. This exploratory data analysis indicates a model must be developed to predict the outcomes.
+
+``` {r searching for natural clusters, fig.height=7, fig.width=7, fig.align='center',message=FALSE,results='hold'}
+library(Hmisc)
+color <- training[,c(1,51,33,53)] # plots Good, Moderate, and Poor Clustering
+color <- color[order(color$classe),]
+par(mfrow=c(3,1));par(mar=c(5,5,4,2))
+labels <- colnames(color)
+tag <- c(" - Shows Best Clustering"," - Shows Poor Clustering"," - Shows Worst Clustering")
+for (i in 1:3) {
+        color[,i] <- cut2(color[,i], g=5)
+        plot(jitter(as.numeric(color$classe)), col=color[,i],
+        main=paste("Variable:",labels[i],tag[i],sep=" "),
+        ylab="Variable 'classe'\n1=\"A\" and 5=\"E\"")
+}
+```
+
+> __Figure 3:__ Searching for Clusters. Three panels show 3 of 52 variables as representatives of whether individual variables could predict outcomes "A" through "E" (recoded as numerals "1" through "5", respectively). The top panel shows the best clustering picture found among the 52 variables. Unfortunately, there was no clustering of color within a step. This indicates the variable itself, after having cut it into five groups, is not a viable method to predict _classe_.
+
+### Prediction Modeling
+
+During the Practical Machine Learning course, students were taught many strategies to developing prediction models. These ranged from linear regression to clustering algorithms to principal component analysis and bagging techniques. The choice of model strategy should take the data itself into account.
+
+According to Kuhn (2008), centering and scaling (i.e., standardizing the variables) is essential for models such as neural networks and support vector machines. There are other models that work with data having less ideal properties. For instance, random forest models do not require standardized data because the classification algorithm takes skewness into account.
+
+Based on the course lectures, it was discussed that random forest models are among the more popular and powerful machine learning techniques available. Given their forgiving properties for skewed data and their powerful predictive ability, this analysis focused on the use of random forests available in the R package called caret (Caret, 2014). Breiman and Cutler (n.d.) provide a useful discussion of random forest development and their key features:
+
+> Overview: Random Forests grow many classification trees. Then the tree "votes" on the classes. The forest then chooses the classification having the most votes (over all the trees in the forest). Trees are grown by random sample with replacement from the original data. It is grown without pruning. Error depends on: a) correlation between any two trees in the forest. Error increases with increasing correlation; and b) strength of individual trees in the forest. A tree with a low error rate is a strong classifier.
+
+Breiman and Cutler present many features of random forests. Among those features, these were beneficial for the dataset in this analysis:
+
+* It is unsurpassed in accuracy among current algorithms
+* It gives estimates of what variables are important in the classification
+* Generated forests can be saved for future use on other data
+
+__Reducing the dataset observation size__
+
+Random forest takes longer to run on larger data sets. Given the size of the training set, it was reduced to one-half its size to facilitate analysis. This was accomplished by setting a random seed and partitioning the data using caret with a probability of selection of p = 0.5. The two tables following this code chunk showed that the proportions among the dependent variable _classe_ were retained in the data reduction.
+
+``` {r Building the model, results='hold',message=FALSE}
+## open the caret package
+library(caret)
+set.seed(330) #set see for reproducibility
+## Execute the data partitioning strategy
+split = createDataPartition(training$classe, p = .5)[[1]]
+retain <- training[ split,]
+table(training$classe)
+table(retain$classe) # retained the proportion
+
+rm(split,color,labels,tag,i,training.provided,testing.provided)
+```
+
+__Creating training, validation, and testing sets__
+
+Prediction is based on working with subsets of the training data without touching the true test set (used only once to predict). The same approach to reduce the data was again used to create three partitions to tune the algorithm. The data was split into three groups: 60% for training, 20% for testing, and 20% for validation.
+
+``` {r create training, validation, and testing sets}
+## Using the data subset, execute a 60%, 20%, 20% partitioning
+set.seed(23704)
+inTrain = createDataPartition(retain$classe, p = .6)[[1]]
+trainingSet = retain[ inTrain,]
+testVal = retain[-inTrain,]
+set.seed(19854)
+inTest = createDataPartition(testVal$classe, p = .5)[[1]]
+valSet = testVal[ inTest,]
+testingSet = testVal[ -inTest,]
+rm(testVal,inTest,inTrain,retain)
+```
+
+__Running the model using cross validation__
+
+The code chunk below invokes a basic function of caret to train the model. It builds random forests using _classe_ as a dependent variable and including all other variables in the training set. Training control options were set to use 3-fold cross validation instead of bootstrapping. This approach was taken after a literature review indicated that for large sample sets bootstrapping can take considerable amount of time. Caret uses 10-fold cross validation as a default, but k=3  was seen in the literature and used in this analysis.
+
+``` {r Running the randomForest algorithm, cache=TRUE}
+library(randomForest) ## load the randomForest package
+modRF2 <- train(classe ~ ., data=trainingSet,method="rf",prox=TRUE,
+                trControl = trainControl(method = "cv", number = 3))
+```
+
+_Of note: The time to calculate this random forest was under 10 minutes based on the hardware configuration as presented in Appendix B. This was in part due to the decision to use 3-fold cross validation instead of the more costly bootstrapping method. Had the calculation time taken longer even after deciding on the k-fold validation, the training data could have been preprocessed using principle component analysis to perform data reduction prior to running the random forest algorithm._
+
+## Results
+
+The caret package takes care of all the calculations, predictions, and internal accounting. The analyst is left to review the results by calling the proper functions and assessing error rates.
+
+### Overview of the Model Characteristics
+
+The RandomForest package provides many outputs with key parameters that are useful. For instance, after the trees vote on the classes the resulting model indicates which variables have the greatest importance in the model. This code chunk extracts the 20 top variables in order of importance and also provides a summary which shows the sample size, the number of predictors, the number of classes that were used as well as the cross validation method employed and the results to tune parameters. In this case mtry=2 gave the greatest accuracy of 0.969 (compared to 0.968 and 0.959).
+
+``` {r important variables,results='hold',message=FALSE}
+## Twenty most important variables and summary
+varImp(modRF2)
+modRF2
+```
+
+### Estimating Out of Sample Error of RandomForest Model
+
+Most important is estimating out of sample error through use of this model. First the predict function in caret takes the random forest model and tries to predict dependent variables within the testing set. The first table below shows comparison of the prediction versus the actual values in the testing set. These results were very good for a first run. Normally one would revise random forest parameters into the training set with the testing set. In this case, analysis went directly to validation set. Once again, the random forest model is run one time against the validation set. The next table shows similar results in fairly good accuracy.
+
+``` {r assessing error rate in model, results='hold'}
+## Using the test set to assess accuracy
+test <- predict(modRF2,testingSet)
+table(test,testingSet$classe)
+## Running tuned model on the validation set
+validate <- predict(modRF2,valSet)
+table(validate,valSet$classe)
+```
+
+The actual accuracy can be calculated two ways. An error rate matrix using the table from the predictions on the validation set is used to find the ratio between the number of off-diagonal predictions compared to the total number of predictions. This gives an error rate of 2%. The second method is to use the confusion matrix function within the caret package. Those results look very similar to the hand calculations and provide greater detail on accuracy. Notice the 95% confidence interval indicating accuracy between 97.3% and 98.6%. 
+
+``` {r accuracy summary from confusion matrix,message=FALSE}
+## out of sample error rate
+ER <- as.matrix(table(validate,valSet$classe))
+error.rate <- (sum(ER)-sum(diag(ER)))/sum(ER)
+msg <- paste("Error rate by hand calculation:",round(error.rate,3),"(similar to that calculated in caret package)",sep=" ")
+print(msg)
+confusionMatrix(testingSet$classe,predict(modRF2,testingSet))
+```
+
+This information can also be shown visually as in Figure 4. Notice the similarity in the predictions from the validation set table and the plot.
+
+``` {r plot showing out of sample error, fig.height=6,fig.width=8,fig.align='center'}
+par(mfrow=c(1,1));par(mar=c(5,4,4,2))
+plot <- ggplot(valSet, aes(classe,validate)) + geom_point(aes(color = classe),
+        size = 4, alpha = .4, position="jitter") +
+        labs(x = "Observed Values in Validation Set", y="Predicted Values from Random Forest") +
+        ggtitle("Predicted versus Observed Results\n(colors based on observed data)") +
+        theme(axis.title.x=element_text(size=16),
+              axis.title.y=element_text(size=16),
+                plot.title=element_text(size=rel(1.5)))
+       
+print(plot)
+```
+> __Figure 4:__ Predicted Versus Observed. Visual display of out of sample error as represented by misclassifications. Each dot represents a prediction. Columns are of similar color and represent truth. Location as compared to predicted value shows those predictions missed by the Random Forest model.
+
+__HAR Study Results__
+
+> Table 1: Results From HAR Study. Results reported by Ugulino et al. as comparison to this use of random forests. 
+
+<strong>Detailed Accuracy</strong>
+        <table class="accuracy_table">
+                <tbody>
+			<tr>
+				<td>Correctly Classified Instances</td>
+				<td>164662</td>
+				<td>99.4144 %</td>
+			</tr>
+			<tr>
+				<td>Incorrectly Classified Instances</td>
+				<td>970</td>
+				<td>0.5856 %</td>
+			</tr>
+			<tr>
+				<td>Root mean squared error</td>
+				<td>0.0463</td>
+				<td></td>
+			</tr>
+			<tr>
+				<td>Relative absolute error</td>
+				<td>0.7938 %</td>
+				<td></td>
+			</tr>
+			<tr>
+				<td>Relative absolute error</td>
+				<td>0.7938 %</td>
+				<td></td>
+			</tr>
+		</tbody>
+	</table>
+	<br />
+	<strong>Detailed Accuracy by Class</strong>
+	<table id="confusionMatrix">
+		<thead>
+			<th>TP Rate</th>
+			<th>FP Rate</th>
+			<th>Precision</th>
+			<th>Recall</th>
+			<th>F-Measure</th>
+			<th>ROC Area</th>
+			<th>Class</th>
+		</thead>
+		<tbody>
+			<tr>
+				<td>0.999</td>
+				<td>0</td>
+				<td>1</td>
+				<td>0.999</td>
+				<td>0.999</td>
+				<td>1</td>
+				<td>Sitting</td>
+			</tr>
+			<tr>
+				<td>0.971</td>
+				<td>0.002</td>
+				<td>0.969</td>
+				<td>0.971</td>
+				<td>0.970</td>
+				<td>0.999</td>
+				<td>Sitting down</td>
+			</tr>
+			<tr>
+				<td>0.999</td>
+				<td>0.001</td>
+				<td>0.998</td>
+				<td>0.999</td>
+				<td>0.999</td>
+				<td>1</td>
+				<td>Standing</td>
+			</tr>
+			<tr>
+				<td>0.962</td>
+				<td>0.003</td>
+				<td>0.969</td>
+				<td>0.962</td>
+				<td>0.965</td>
+				<td>0.999</td>
+				<td>Standing up</td>
+			</tr>
+			<tr>
+				<td>0.998</td>
+				<td>0.001</td>
+				<td>0.998</td>
+				<td>0.998</td>
+				<td>0.998</td>
+				<td>1</td>
+				<td>Walking</td>
+			</tr>
+			<tr style="background-color: #d7ebf9">
+				<td>0.994</td>
+				<td>0.001</td>
+				<td>0.994</td>
+				<td>0.994</td>
+				<td>0.994</td>
+				<td>1</td>
+				<td><strong>Weighted Avg.</strong></td>
+			</tr>
+		</tbody>
+	</table>
+      
+### Predicting _Classe_ for the True Test Set
+
+Lastly, this random forest model was used one time against 20 different cases provided in a dataset separate from the original training set. The predict function used the model generated from the analysis along with the true testing dataset to create a list of predicted values for the variable _classe_. The results are shown in the matrix below the code chunk. 
+              
+``` {r predicting outcomes of the test set}              
+pred <- predict(modRF2,testing)
+predTable <- matrix(pred,nrow=1,ncol=20, byrow=TRUE)
+predTable
+```
+
+These values were submitted to the course assessment website and the predictions were 100% accurate. It should be noted that this is an unusual result. It is typical that the accuracy of the model on the final test set is lower than that estimated using the validation set. At this time, it is uncertain as to why the accuracy was improved when making the final predictions.
+
+### _Reproducibility_
+
+All analyses performed in this report are reproduced in the R markdown language (Paulson, 2013) in a file entitled PredictingAcitivitywithMachineLearning.Rmd [Gendron, 2014]. Using this R markdown file will allow readers to reproduce the results exactly if they can access the data set as provided by Johns Hopkins University's Practical Machine Learning course (Leek et al., 2014).
+
+******
+
+## References
+
+Breiman, L. & Cutler, A. (n.d.). _Random forests_ Retrieved from [http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#features](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#features).
+
+Caret. (2014, May 31). _The caret package_. Retrieved from [http://caret.r-forge.r-project.org/](http://caret.r-forge.r-project.org/).
+
+Gendron, G. R., (2014, June 17). _Predicting activity with machine learning_ [Data file]. Retrieved from [https://github.com/jgendron/Machine-Learning](https://github.com/jgendron/Machine-Learning).
+
+Groupware. (2014). _Human activity recognition_. Retrieved from
+[http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).
+
+Khun, M. (2008, November). Building predictive models in R using the caret package. _Journal of Statistical Software_, 28(5). Retrieved from [http://www.jstatsoft.org/v28/i05/paper](http://www.jstatsoft.org/v28/i05/paper).
+
+Leek, J., Caffo, B., & Peng, R. D. (2014). _Practical machine learning_. Retrieved from [https://class.coursera.org/predmachlearn-002/human_grading/view/courses/972090/assessments/4/submissions](https://class.coursera.org/predmachlearn-002/human_grading/view/courses/972090/assessments/4/submissions).
+
+Paulson, J. (2013, October 12). _Using R markdown with rstudio_. Retrieved from [https://support.rstudio.com/hc/en-us/articles/200552086-Using-R-Markdown](https://support.rstudio.com/hc/en-us/articles/200552086-Using-R-Markdown).
+
+R Core Team. (2014). _R: A language and environment for statistical computing_. R Foundation for Statistical Computing. Vienna, Austria. Retrieved from [http://www.R-project.org/](http://www.R-project.org/).
+
+Ugulino, W., Cardador, D., Vega, K., Velloso, E., Milidiu, R., & Fuks, H. (2012).  Wearable computing: Accelerometers' data classification of body postures and movements. In Barros, L.N., Finger, M., Pozo, A.T.R., Giménez Lugo, G.A., & Castilho, M. (Eds.) _Advances in Artificial Intelligence - SBIA 2012._ (7589), 52-61. Berlin / Heidelberg: Springer. doi:10.1007/978-3-642-34459-6_6. Retrieved from [http://groupware.les.inf.puc-rio.br/public/papers/2012.Ugulino.WearableComputing.HAR.Classifier.RIBBON.pdf](http://groupware.les.inf.puc-rio.br/public/papers/2012.Ugulino.WearableComputing.HAR.Classifier.RIBBON.pdf).
+
+
+******
+## Appendix A: Summary Information of Transformed Dataset
+
+This summary view is shown to give the reader a sense of the data, names, distribution, and quality after transformations. Please note the lack of any NAs. Also note the very last variable _classe_ is the dependent variable.
+
+```{r summTraining, echo=FALSE}
+summary(training)
+```
+
+*****
+
+## Appendix B: Session Info
+
+```{r sessionInfo,echo=FALSE}
+sessionInfo()
+```
